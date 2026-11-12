@@ -1,40 +1,107 @@
-import { Customer, Order } from '../types/labpath';
+import { Order } from '../types/labpath';
 
 export function formatPKR(amount: number): string {
   return `Rs. ${Math.round(amount).toLocaleString('en-PK')}`;
 }
 
+const ONES = [
+  '',
+  'One',
+  'Two',
+  'Three',
+  'Four',
+  'Five',
+  'Six',
+  'Seven',
+  'Eight',
+  'Nine',
+  'Ten',
+  'Eleven',
+  'Twelve',
+  'Thirteen',
+  'Fourteen',
+  'Fifteen',
+  'Sixteen',
+  'Seventeen',
+  'Eighteen',
+  'Nineteen',
+];
+const TENS = [
+  '',
+  '',
+  'Twenty',
+  'Thirty',
+  'Forty',
+  'Fifty',
+  'Sixty',
+  'Seventy',
+  'Eighty',
+  'Ninety',
+];
+
+function convertLessThanThousand(n: number): string {
+  if (n === 0) return '';
+  if (n < 20) return ONES[n];
+  if (n < 100) {
+    return `${TENS[Math.floor(n / 10)]}${n % 10 !== 0 ? ' ' + ONES[n % 10] : ''}`;
+  }
+  return `${ONES[Math.floor(n / 100)]} Hundred${
+    n % 100 !== 0 ? ' and ' + convertLessThanThousand(n % 100) : ''
+  }`;
+}
+
+export function numberToWordsPKR(amount: number): string {
+  const num = Math.round(amount);
+  if (num <= 0) return 'Rupees Zero Only';
+
+  let remaining = num;
+  const parts: string[] = [];
+
+  const লাখ = Math.floor(remaining / 100000);
+  if (লাখ > 0) {
+    parts.push(`${convertLessThanThousand(লাখ)} Lakh`);
+    remaining %= 100000;
+  }
+
+  const thousand = Math.floor(remaining / 1000);
+  if (thousand > 0) {
+    parts.push(`${convertLessThanThousand(thousand)} Thousand`);
+    remaining %= 1000;
+  }
+
+  if (remaining > 0) {
+    parts.push(convertLessThanThousand(remaining));
+  }
+
+  return `Rupees ${parts.join(' ')} Only`;
+}
+
 export function generateOrderDocumentHtml(
   order: Order,
-  customer: Customer | undefined,
   mode: 'INVOICE' | 'CHALLAN'
 ): string {
   const isChallan = mode === 'CHALLAN';
-  const previousBalance = customer ? customer.currentBalance : 0;
-  const closingBalance =
-    order.status === 'DELIVERED'
-      ? previousBalance
-      : previousBalance + order.totalAmount;
+  const totalQty = order.items.reduce((s, i) => s + i.quantity + (i.bonusQty || 0), 0);
 
   const rowsHtml = order.items
     .map(
       (item, index) => `
       <tr>
-        <td style="text-align:center;">${index + 1}</td>
+        <td style="text-align:center;font-weight:600;">${index + 1}</td>
         <td>
-          <strong>${item.productName}</strong><br/>
-          <span style="font-size:11px;color:#64748b;">SKU: ${item.sku} | Unit: ${item.unit}</span>
+          <div style="font-weight:700;color:#0f172a;">${item.productName}</div>
+          <div style="font-size:11px;color:#475569;">Brand: ${item.brand || 'Standard'} | Code: ${item.sku}</div>
         </td>
-        <td style="text-align:center;">
-          ${item.allocatedBatchNumber || 'FEFO Auto'}<br/>
-          <span style="font-size:11px;color:#0f766e;">Exp: ${item.allocatedBatchExpiry || 'Verified'}</span>
-        </td>
-        <td style="text-align:center;font-weight:700;">${item.quantity}</td>
+        <td style="text-align:center;">${item.packSizeInfo || item.unit}</td>
+        <td style="text-align:center;font-weight:600;">${item.allocatedBatchNumber || 'FEFO-STD'}</td>
+        <td style="text-align:center;">${item.allocatedBatchExpiry || 'Verified'}</td>
+        <td style="text-align:center;font-weight:700;">${item.quantity} ${item.unit}</td>
+        <td style="text-align:center;">${item.bonusQty ? item.bonusQty : '-'}</td>
         ${
           !isChallan
-            ? `<td style="text-align:right;">${formatPKR(item.unitPrice)}</td>
-               <td style="text-align:right;font-weight:700;">${formatPKR(item.lineTotal)}</td>`
-            : `<td style="text-align:center;">Checked & Packed</td>`
+            ? `<td style="text-align:right;">${Math.round(item.unitPrice).toLocaleString('en-PK')}</td>
+               <td style="text-align:right;font-weight:700;">${Math.round(item.lineTotal).toLocaleString('en-PK')}</td>`
+            : `<td style="text-align:center;font-weight:600;color:#15803d;">Checked & Packed</td>`
         }
       </tr>
     `
@@ -48,190 +115,249 @@ export function generateOrderDocumentHtml(
   <meta charset="utf-8" />
   <title>${isChallan ? 'Delivery Challan' : 'Commercial Invoice'} - ${order.orderNumber}</title>
   <style>
+    @page { size: A4; margin: 14mm; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: Arial, Helvetica, sans-serif;
       color: #0f172a;
-      margin: 24px;
-      font-size: 13px;
+      margin: 0;
+      padding: 16px;
+      font-size: 12px;
     }
-    .header {
+    .outer-border {
+      border: 2px solid #0f172a;
+      padding: 16px;
+    }
+    .top-header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      border-bottom: 3px solid #0d9488;
-      padding-bottom: 14px;
-      margin-bottom: 18px;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 12px;
+      margin-bottom: 12px;
     }
-    .brand-title {
+    .company-title {
       font-size: 24px;
-      font-weight: 800;
-      color: #0f766e;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      color: #0f172a;
       margin: 0;
     }
-    .brand-sub {
+    .company-tagline {
       font-size: 12px;
-      color: #475569;
-      margin-top: 4px;
-    }
-    .doc-badge {
-      background: #0f766e;
-      color: white;
-      padding: 6px 14px;
-      border-radius: 6px;
       font-weight: 700;
-      font-size: 14px;
-      text-transform: uppercase;
-      text-align: right;
+      color: #334155;
+      margin-top: 3px;
     }
-    .meta-grid {
+    .company-address {
+      font-size: 11px;
+      color: #475569;
+      margin-top: 3px;
+      line-height: 1.4;
+    }
+    .doc-box {
+      border: 2px solid #0f172a;
+      padding: 8px 14px;
+      text-align: center;
+      min-width: 190px;
+    }
+    .doc-box-title {
+      font-size: 15px;
+      font-weight: 900;
+      text-transform: uppercase;
+      border-bottom: 1px solid #0f172a;
+      padding-bottom: 4px;
+      margin-bottom: 6px;
+    }
+    .info-grid {
       display: flex;
       justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      border: 1px solid #475569;
+      padding: 10px 12px;
       background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      padding: 12px 16px;
-      margin-bottom: 18px;
+    }
+    .info-col {
+      flex: 1;
+      line-height: 1.5;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 18px;
+      margin-bottom: 12px;
     }
     th {
-      background: #f1f5f9;
-      color: #334155;
-      font-weight: 700;
-      padding: 10px 8px;
-      border: 1px solid #cbd5e1;
-      font-size: 12px;
+      background: #e2e8f0;
+      color: #0f172a;
+      font-weight: 800;
+      padding: 8px 6px;
+      border: 1px solid #0f172a;
+      font-size: 11px;
+      text-transform: uppercase;
     }
     td {
-      padding: 9px 8px;
-      border: 1px solid #cbd5e1;
-      vertical-align: top;
+      padding: 7px 6px;
+      border: 1px solid #475569;
+      vertical-align: middle;
+      font-size: 11.5px;
     }
-    .totals-box {
-      width: 320px;
-      margin-left: auto;
-      border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    .totals-row {
+    .bottom-grid {
       display: flex;
       justify-content: space-between;
-      padding: 8px 12px;
-      border-bottom: 1px solid #e2e8f0;
+      align-items: flex-start;
+      gap: 20px;
+      margin-top: 10px;
     }
-    .totals-row.highlight {
-      background: #f0fdfa;
-      font-weight: 800;
-      font-size: 15px;
-      color: #0f766e;
+    .terms-box {
+      flex: 1.3;
+      font-size: 11px;
+      color: #334155;
+      line-height: 1.45;
+    }
+    .totals-table {
+      width: 280px;
+      border-collapse: collapse;
+    }
+    .totals-table td {
+      border: 1px solid #0f172a;
+      padding: 6px 10px;
+    }
+    .net-payable-row {
+      background: #e2e8f0;
+      font-weight: 900;
+      font-size: 14px;
     }
     .signatures {
       display: flex;
       justify-content: space-between;
-      margin-top: 48px;
-      padding-top: 12px;
+      margin-top: 52px;
+      padding-top: 10px;
     }
-    .sig-line {
-      width: 200px;
-      border-top: 1px solid #64748b;
+    .sig-block {
+      width: 28%;
+      border-top: 1.5px solid #0f172a;
       text-align: center;
       padding-top: 6px;
-      font-size: 12px;
-      color: #475569;
+      font-weight: 700;
+      font-size: 11px;
     }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div>
-      <h1 class="brand-title">LABPATH DIAGNOSTICS & SUPPLIES</h1>
-      <div class="brand-sub">Biochemistry Reagents, Vacutainers, Lab Equipment & Chemicals</div>
-      <div class="brand-sub">Hospital Road, Sukkur, Sindh | Helpline: +92 300 7150000</div>
-    </div>
-    <div>
-      <div class="doc-badge">${isChallan ? 'DELIVERY CHALLAN' : 'COMMERCIAL INVOICE'}</div>
-      <div style="margin-top:8px;text-align:right;font-size:12px;">
-        <strong>No:</strong> ${order.orderNumber}<br/>
-        <strong>Date:</strong> ${new Date(order.createdAt).toLocaleDateString('en-PK')}<br/>
-        <strong>Status:</strong> ${order.status}
+  <div class="outer-border">
+    <div class="top-header">
+      <div>
+        <h1 class="company-title">LABPATH DIAGNOSTICS & SUPPLIES</h1>
+        <div class="company-tagline">Importers & Distributors: Biochemistry Reagents, Blood Collection Tubes, Lab Chemicals & Instruments</div>
+        <div class="company-address">
+          Office #04, Al-Shifa Medical Plaza, Hospital Road, Sukkur, Sindh<br/>
+          Sales & Dispatch Desk: 071-5612233 | WhatsApp: 0300-7151122 | Email: orders@labpathsukkur.pk
+        </div>
+      </div>
+      <div class="doc-box">
+        <div class="doc-box-title">${isChallan ? 'DELIVERY CHALLAN' : 'COMMERCIAL INVOICE'}</div>
+        <div style="text-align:left;font-size:11.5px;line-height:1.5;">
+          <strong>${isChallan ? 'Challan No:' : 'Invoice No:'}</strong> ${order.orderNumber}<br/>
+          <strong>Date:</strong> ${order.createdAt.slice(0, 10)}<br/>
+          <strong>Terms:</strong> ${order.paymentTerms.replace('_', ' ')}<br/>
+          <strong>Status:</strong> ${order.status}
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="meta-grid">
-    <div>
-      <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Billed / Delivered To</div>
-      <div style="font-size:15px;font-weight:800;margin-top:2px;">${order.customerName}</div>
-      <div style="color:#475569;">Area: ${order.customerArea}</div>
-      ${customer ? `<div style="color:#475569;">Contact: ${customer.contactPerson} (${customer.phone})</div>` : ''}
+    <div class="info-grid">
+      <div class="info-col">
+        <div style="font-size:10px;font-weight:800;text-transform:uppercase;color:#475569;">M/S (Buyer / Lab / Hospital Details):</div>
+        <div style="font-size:14px;font-weight:800;margin-top:2px;">${order.buyerName}</div>
+        <div><strong>Address / Town:</strong> ${order.buyerArea}</div>
+        <div><strong>Contact Person:</strong> ${order.buyerContact || 'Lab Incharge'} (${order.buyerPhone || 'N/A'})</div>
+      </div>
+      <div class="info-col" style="text-align:right;">
+        <div style="font-size:10px;font-weight:800;text-transform:uppercase;color:#475569;">Order & Dispatch Reference:</div>
+        <div><strong>Booked By (Sales Rep):</strong> ${order.salespersonName}</div>
+        <div><strong>Approved By:</strong> ${order.approvedBy || 'Manager LabPath'}</div>
+        <div><strong>Packed / Dispatched By:</strong> ${order.dispatchedBy || 'Main Cold Store Sukkur'}</div>
+        <div><strong>Total Packs / Units:</strong> ${totalQty} Units</div>
+      </div>
     </div>
-    <div style="text-align:right;">
-      <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Sales & Dispatch Info</div>
-      <div><strong>Sales Rep:</strong> ${order.salespersonName}</div>
-      <div><strong>Approved By:</strong> ${order.approvedBy || 'Admin Manager'}</div>
-      <div><strong>Cold-Chain Checked:</strong> Yes (2°C - 8°C Verified)</div>
-    </div>
-  </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th style="width:36px;">#</th>
-        <th style="text-align:left;">Item Description / Pack</th>
-        <th style="width:140px;">Batch # & Expiry</th>
-        <th style="width:65px;">Qty</th>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:32px;">S#</th>
+          <th style="text-align:left;">Item Description & Brand</th>
+          <th style="width:85px;">Pack Size</th>
+          <th style="width:90px;">Batch / Lot #</th>
+          <th style="width:82px;">Expiry</th>
+          <th style="width:65px;">Qty</th>
+          <th style="width:48px;">Bonus</th>
+          ${
+            !isChallan
+              ? `<th style="width:80px;text-align:right;">Rate (Rs)</th>
+                 <th style="width:95px;text-align:right;">Net Amount</th>`
+              : `<th style="width:120px;">Store Verification</th>`
+          }
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>
+
+    <div class="bottom-grid">
+      <div class="terms-box">
         ${
           !isChallan
-            ? `<th style="width:105px;text-align:right;">Unit Rate</th>
-               <th style="width:115px;text-align:right;">Total</th>`
-            : `<th style="width:130px;">Dispatch Check</th>`
+            ? `<div style="margin-bottom:8px;padding:6px 8px;background:#f1f5f9;border:1px solid #cbd5e1;font-weight:700;">
+                 Amount in Words: ${numberToWordsPKR(order.totalAmount)}
+               </div>`
+            : ''
         }
-      </tr>
-    </thead>
-    <tbody>
-      ${rowsHtml}
-    </tbody>
-  </table>
+        <strong>Local Supply Terms & Cold-Chain Note:</strong><br/>
+        1. Please check batch numbers, intact seals, and quantities at the time of delivery.<br/>
+        2. Temperature-sensitive Biochemistry Reagents (2°C to 8°C) are dispatched with ice gel packs; transfer immediately to lab refrigerator.<br/>
+        3. Claims regarding breakage or short supply must be intimated within 24 hours of receipt.
+        ${order.adminAdjustmentNote ? `<br/><strong>Order Note:</strong> ${order.adminAdjustmentNote}` : ''}
+      </div>
 
-  ${
-    !isChallan
-      ? `
-    <div class="totals-box">
-      <div class="totals-row">
-        <span>Subtotal:</span>
-        <strong>${formatPKR(order.subtotalAmount)}</strong>
-      </div>
-      <div class="totals-row">
-        <span>Special Discount:</span>
-        <strong>- ${formatPKR(order.extraDiscountAmount)}</strong>
-      </div>
-      <div class="totals-row highlight">
-        <span>Net Invoice Total:</span>
-        <span>${formatPKR(order.totalAmount)}</span>
-      </div>
-      <div class="totals-row">
-        <span>Previous Khata Balance:</span>
-        <span>${formatPKR(previousBalance)}</span>
-      </div>
-      <div class="totals-row" style="background:#fef2f2;color:#991b1b;font-weight:700;">
-        <span>Closing Khata Balance:</span>
-        <span>${formatPKR(closingBalance)}</span>
-      </div>
+      ${
+        !isChallan
+          ? `
+        <table class="totals-table">
+          <tr>
+            <td><strong>Gross Amount:</strong></td>
+            <td style="text-align:right;font-weight:700;">${formatPKR(order.subtotalAmount)}</td>
+          </tr>
+          <tr>
+            <td><strong>Less Special Discount:</strong></td>
+            <td style="text-align:right;">- ${formatPKR(order.extraDiscountAmount)}</td>
+          </tr>
+          <tr class="net-payable-row">
+            <td>NET PAYABLE:</td>
+            <td style="text-align:right;">${formatPKR(order.totalAmount)}</td>
+          </tr>
+        </table>
+      `
+          : `
+        <table class="totals-table">
+          <tr>
+            <td><strong>Total Line Items:</strong></td>
+            <td style="text-align:right;font-weight:700;">${order.items.length} Items</td>
+          </tr>
+          <tr class="net-payable-row">
+            <td>TOTAL QTY PACKED:</td>
+            <td style="text-align:right;">${totalQty} Units</td>
+          </tr>
+        </table>
+      `
+      }
     </div>
-  `
-      : `<div style="padding:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;color:#166534;">
-           <strong>Warehouse Note:</strong> Please verify intact seals and cold-chain ice packs for Biochemistry Reagents upon receipt.
-         </div>`
-  }
 
-  <div class="signatures">
-    <div class="sig-line">Prepared / Packed By (LabPath)</div>
-    <div class="sig-line">Authorized Manager Signature</div>
-    <div class="sig-line">Receiver Sign & Lab Stamp</div>
+    <div class="signatures">
+      <div class="sig-block">Prepared / Billed By (LabPath)</div>
+      <div class="sig-block">Store / Cold-Chain Dispatch</div>
+      <div class="sig-block">Receiver Signature & Lab Stamp</div>
+    </div>
   </div>
 </body>
 </html>

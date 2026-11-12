@@ -151,3 +151,4 @@ export const ledgerEntries = pgTable('ledger_entries', {
     .references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+

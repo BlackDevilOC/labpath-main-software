@@ -8,3 +8,4 @@ export default {
     url: process.env.DATABASE_URL || 'postgresql://localhost:5432/labpath',
   },
 } satisfies Config;
+

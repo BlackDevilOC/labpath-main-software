@@ -26,3 +26,4 @@ export function detectPostgresProvider(url: string = process.env.DATABASE_URL ||
 }
 
 export { schema };
+

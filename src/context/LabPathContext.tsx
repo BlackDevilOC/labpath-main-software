@@ -1,127 +1,149 @@
 import React, { createContext, useContext, useState, useMemo } from 'react';
 import {
+  AppRouteKey,
   AppUser,
-  ApprovalPolicy,
-  Customer,
-  CustomerPrice,
-  LedgerEntry,
+  BuyerPreset,
   Order,
   OrderItem,
-  PaymentMethod,
+  PaymentTerms,
   Product,
   ProductBatch,
+  ROLE_ALLOWED_ROUTES,
   UserRole,
 } from '../types/labpath';
 import {
   INITIAL_BATCHES,
-  INITIAL_CUSTOMER_PRICES,
-  INITIAL_CUSTOMERS,
-  INITIAL_LEDGER,
   INITIAL_ORDERS,
   INITIAL_PRODUCTS,
   INITIAL_USERS,
+  RECENT_BUYER_PRESETS,
 } from '../data/initialLabpathData';
 
-interface CreateOrderInput {
-  customerId: string;
+export interface CreateOrderInput {
+  draftOrderId?: string; // If updating an existing draft
+  isDraft?: boolean; // True when saving as draft
+  buyerName: string;
+  buyerContact: string;
+  buyerPhone: string;
+  buyerArea: string;
+  paymentTerms: PaymentTerms;
   items: {
     productId: string;
     quantity: number;
+    bonusQty: number;
     unitPrice: number;
   }[];
   extraDiscountAmount: number;
-  note?: string;
+  orderNote?: string;
+}
+
+export interface EditableOrderLine {
+  productId: string;
+  quantity: number;
+  bonusQty: number;
+  unitPrice: number;
 }
 
 interface LabPathContextValue {
-  // Active User / Role Switcher
-  currentUser: AppUser;
+  // Authentication & Role Access Control
+  currentUser: AppUser | null;
   users: AppUser[];
-  switchRole: (role: UserRole) => void;
+  login: (usernameOrPhone: string, password: string) => { ok: boolean; error?: string };
+  quickLoginByRole: (role: UserRole) => void;
+  logout: () => void;
+  canAccessRoute: (route: AppRouteKey) => boolean;
 
-  // Network / Offline Mode Simulation (for Field Sales in low-signal hospitals)
+  // Offline Mode
   isOfflineMode: boolean;
   toggleOfflineMode: () => void;
   offlinePendingCount: number;
   syncOfflineQueue: () => number;
 
-  // Database Provider Toggle (Neon.tech <-> Supabase portability preview)
-  activeDbProvider: 'NEON' | 'SUPABASE';
-  setActiveDbProvider: (provider: 'NEON' | 'SUPABASE') => void;
-
-  // Approval Policy Settings
-  approvalPolicy: ApprovalPolicy;
-  updateApprovalPolicy: (patch: Partial<ApprovalPolicy>) => void;
-
-  // Master Data
-  customers: Customer[];
+  // Data
+  recentBuyers: BuyerPreset[];
   products: Product[];
   batches: ProductBatch[];
-  customerPrices: CustomerPrice[];
   orders: Order[];
-  ledger: LedgerEntry[];
 
-  // Helpers & Computations
-  getEffectivePrice: (customerId: string, productId: string) => { price: number; isCustom: boolean; standardPrice: number };
+  // Helpers
   getProductTotalStock: (productId: string) => number;
   getFefoBatchesForProduct: (productId: string) => ProductBatch[];
   getDaysUntilExpiry: (expiryDate: string) => number;
 
-  // Actions
+  // Order & Draft Actions
   createOrder: (input: CreateOrderInput) => Order;
-  approveOrder: (orderId: string, approvalNote?: string, updatedExtraDiscount?: number) => void;
+  deleteDraftOrder: (orderId: string) => void;
+  updateOrderFromAdmin: (
+    orderId: string,
+    updatedLines: EditableOrderLine[],
+    extraDiscountAmount: number,
+    adminAdjustmentNote: string,
+    approveNow: boolean
+  ) => void;
   rejectOrder: (orderId: string, reason: string) => void;
-  packAndDispatchOrder: (orderId: string, status: 'PACKED' | 'DISPATCHED' | 'DELIVERED') => void;
-  upsertCustomerPrice: (customerId: string, productId: string, customPrice: number) => void;
-  addProductBatch: (batch: Omit<ProductBatch, 'id'>) => void;
-  addProduct: (product: Omit<Product, 'id'>) => void;
-  addCustomer: (customer: Omit<Customer, 'id' | 'isActive'>) => void;
-  recordRecoveryPayment: (input: {
-    customerId: string;
-    amount: number;
-    paymentMethod: PaymentMethod;
-    referenceNo: string;
-    note?: string;
-  }) => void;
-  verifyRecoveryPayment: (ledgerId: string, approve: boolean) => void;
+  packAndDispatchOrder: (
+    orderId: string,
+    nextStatus: 'PACKED' | 'DISPATCHED' | 'DELIVERED'
+  ) => void;
+
+  // Inventory & Batch Actions
+  addProductBatch: (batch: Omit<ProductBatch, 'id'>) => ProductBatch;
+  updateBatchQuantity: (batchId: string, newQuantity: number) => void;
+  addProduct: (
+    product: Omit<Product, 'id'>,
+    initialBatch?: Omit<ProductBatch, 'id' | 'productId'>
+  ) => Product;
+  updateProduct: (productId: string, patch: Partial<Omit<Product, 'id'>>) => void;
+  deleteProduct: (productId: string) => void;
+
+  // Global Buyer & Staff Admin Actions
+  addGlobalBuyer: (buyer: Omit<BuyerPreset, 'id'>) => BuyerPreset;
+  deleteGlobalBuyer: (buyerId: string) => void;
+  addStaffUser: (user: Omit<AppUser, 'id'>) => void;
+  updateStaffRole: (userId: string, newRole: UserRole) => void;
+  removeStaffUser: (userId: string) => void;
 }
 
 const LabPathContext = createContext<LabPathContextValue | undefined>(undefined);
 
 export function LabPathProvider({ children }: { children: React.ReactNode }) {
-  const [users] = useState<AppUser[]>(INITIAL_USERS);
-  const [currentUser, setCurrentUser] = useState<AppUser>(INITIAL_USERS[0]); // Starts as Admin so user can explore everything
+  const [users, setUsers] = useState<AppUser[]>(INITIAL_USERS);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState<boolean>(false);
-  const [activeDbProvider, setActiveDbProvider] = useState<'NEON' | 'SUPABASE'>('NEON');
 
-  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>({
-    requireApprovalForAllOrders: false,
-    autoApproveWithinCreditLimit: true,
-    maxSalespersonDiscountPercent: 5,
-  });
-
-  const [customers, setCustomers] = useState<Customer[]>(INITIAL_CUSTOMERS);
+  const [recentBuyers, setRecentBuyers] = useState<BuyerPreset[]>(RECENT_BUYER_PRESETS);
   const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
   const [batches, setBatches] = useState<ProductBatch[]>(INITIAL_BATCHES);
-  const [customerPrices, setCustomerPrices] = useState<CustomerPrice[]>(INITIAL_CUSTOMER_PRICES);
   const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
-  const [ledger, setLedger] = useState<LedgerEntry[]>(INITIAL_LEDGER);
 
-  const switchRole = (role: UserRole) => {
+  const login = (usernameOrPhone: string, password: string) => {
+    const clean = usernameOrPhone.trim().toLowerCase();
+    const matched = users.find(
+      (u) =>
+        u.isActive !== false &&
+        (u.username.toLowerCase() === clean || u.phone.toLowerCase() === clean) &&
+        u.password === password.trim()
+    );
+    if (!matched) {
+      return { ok: false, error: 'Invalid username/phone or password' };
+    }
+    setCurrentUser(matched);
+    return { ok: true };
+  };
+
+  const quickLoginByRole = (role: UserRole) => {
     const found = users.find((u) => u.role === role);
     if (found) setCurrentUser(found);
   };
 
-  const getEffectivePrice = (customerId: string, productId: string) => {
-    const prod = products.find((p) => p.id === productId);
-    const standardPrice = prod ? prod.basePrice : 0;
-    const custom = customerPrices.find(
-      (cp) => cp.customerId === customerId && cp.productId === productId
-    );
-    if (custom) {
-      return { price: custom.customPrice, isCustom: true, standardPrice };
-    }
-    return { price: standardPrice, isCustom: false, standardPrice };
+  const logout = () => {
+    setCurrentUser(null);
+  };
+
+  const canAccessRoute = (route: AppRouteKey): boolean => {
+    if (!currentUser) return false;
+    if (route === 'UNAUTHORIZED') return true;
+    return ROLE_ALLOWED_ROUTES[currentUser.role].includes(route);
   };
 
   const getFefoBatchesForProduct = (productId: string): ProductBatch[] => {
@@ -139,79 +161,127 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
   const getDaysUntilExpiry = (expiryDate: string): number => {
     const now = new Date('2026-11-12T00:00:00');
     const exp = new Date(expiryDate);
-    const diffMs = exp.getTime() - now.getTime();
-    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    return Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  };
+
+  const buildOrderItems = (lines: EditableOrderLine[]): OrderItem[] => {
+    return lines
+      .filter((l) => l.quantity > 0)
+      .map((line, idx) => {
+        const product = products.find((p) => p.id === line.productId)!;
+        const primaryBatch = getFefoBatchesForProduct(line.productId)[0];
+        return {
+          id: `oi-${Date.now()}-${idx}`,
+          productId: product.id,
+          productName: product.name,
+          brand: product.brand,
+          packSizeInfo: product.packSizeInfo,
+          sku: product.sku,
+          unit: product.unit,
+          quantity: line.quantity,
+          bonusQty: line.bonusQty || 0,
+          standardPrice: product.basePrice,
+          unitPrice: line.unitPrice,
+          lineTotal: line.quantity * line.unitPrice,
+          allocatedBatchId: primaryBatch?.id,
+          allocatedBatchNumber: primaryBatch?.batchNumber,
+          allocatedBatchExpiry: primaryBatch?.expiryDate,
+        };
+      });
+  };
+
+  const addGlobalBuyer = (buyer: Omit<BuyerPreset, 'id'>): BuyerPreset => {
+    const cleanName = buyer.buyerName.trim();
+    const existing = recentBuyers.find(
+      (b) => b.buyerName.toLowerCase() === cleanName.toLowerCase()
+    );
+    if (existing) {
+      const updated: BuyerPreset = {
+        ...existing,
+        buyerName: cleanName,
+        contactPerson: buyer.contactPerson.trim() || existing.contactPerson,
+        phone: buyer.phone.trim() || existing.phone,
+        areaCity: buyer.areaCity.trim() || existing.areaCity,
+      };
+      setRecentBuyers((prev) =>
+        prev.map((b) => (b.id === existing.id ? updated : b))
+      );
+      return updated;
+    }
+    const created: BuyerPreset = {
+      id: `bp-${Date.now()}`,
+      buyerName: cleanName,
+      contactPerson: buyer.contactPerson.trim() || 'Incharge',
+      phone: buyer.phone.trim(),
+      areaCity: buyer.areaCity.trim() || 'Sukkur',
+    };
+    setRecentBuyers((prev) => [created, ...prev]);
+    return created;
+  };
+
+  const deleteGlobalBuyer = (buyerId: string) => {
+    setRecentBuyers((prev) => prev.filter((b) => b.id !== buyerId));
   };
 
   const createOrder = (input: CreateOrderInput): Order => {
-    const customer = customers.find((c) => c.id === input.customerId);
-    if (!customer) throw new Error('Customer not found');
-
-    const orderItems: OrderItem[] = input.items.map((item, idx) => {
-      const product = products.find((p) => p.id === item.productId)!;
-      const fefoBatches = getFefoBatchesForProduct(item.productId);
-      const primaryBatch = fefoBatches[0];
-
-      return {
-        id: `oi-${Date.now()}-${idx}`,
-        productId: product.id,
-        productName: product.name,
-        sku: product.sku,
-        unit: product.unit,
-        quantity: item.quantity,
-        standardPrice: product.basePrice,
-        unitPrice: item.unitPrice,
-        lineTotal: item.quantity * item.unitPrice,
-        allocatedBatchId: primaryBatch?.id,
-        allocatedBatchNumber: primaryBatch?.batchNumber,
-        allocatedBatchExpiry: primaryBatch?.expiryDate,
-      };
-    });
-
+    const orderItems = buildOrderItems(input.items);
     const subtotalAmount = orderItems.reduce((sum, i) => sum + i.lineTotal, 0);
     const totalAmount = Math.max(0, subtotalAmount - input.extraDiscountAmount);
 
-    // Evaluate Smart Approval Rules
-    const reasons: string[] = [];
-    const projectedBalance = customer.currentBalance + totalAmount;
-
-    if (approvalPolicy.requireApprovalForAllOrders) {
-      reasons.push('Company policy requires Manager approval for all orders');
+    const cleanBuyer = input.buyerName.trim();
+    if (cleanBuyer) {
+      addGlobalBuyer({
+        buyerName: cleanBuyer,
+        contactPerson: input.buyerContact,
+        phone: input.buyerPhone,
+        areaCity: input.buyerArea,
+      });
     }
-    if (projectedBalance > customer.creditLimit) {
-      reasons.push(
-        `Credit Limit Exceeded: Balance (Rs. ${customer.currentBalance.toLocaleString()}) + Order (Rs. ${totalAmount.toLocaleString()}) = Rs. ${projectedBalance.toLocaleString()} (Limit: Rs. ${customer.creditLimit.toLocaleString()})`
+
+    const nextStatus = input.isDraft ? 'DRAFT' : 'PENDING_APPROVAL';
+
+    if (input.draftOrderId) {
+      let updatedOrder: Order | null = null;
+      setOrders((prev) =>
+        prev.map((o) => {
+          if (o.id !== input.draftOrderId) return o;
+          updatedOrder = {
+            ...o,
+            buyerName: cleanBuyer || 'Draft Lab Buyer',
+            buyerContact: input.buyerContact.trim() || 'Lab Manager',
+            buyerPhone: input.buyerPhone.trim() || '-',
+            buyerArea: input.buyerArea.trim() || 'Sukkur',
+            paymentTerms: input.paymentTerms,
+            status: nextStatus,
+            items: orderItems,
+            subtotalAmount,
+            extraDiscountAmount: input.extraDiscountAmount,
+            totalAmount,
+            orderNote: input.orderNote,
+            isOfflineQueued: isOfflineMode,
+          };
+          return updatedOrder;
+        })
       );
+      if (updatedOrder) return updatedOrder;
     }
-    if (input.extraDiscountAmount > 0) {
-      const discountPct = subtotalAmount > 0 ? (input.extraDiscountAmount / subtotalAmount) * 100 : 0;
-      if (discountPct > approvalPolicy.maxSalespersonDiscountPercent || input.extraDiscountAmount > 0) {
-        reasons.push(
-          `Extra Field Discount of Rs. ${input.extraDiscountAmount.toLocaleString()} (${discountPct.toFixed(1)}%) requested`
-        );
-      }
-    }
-
-    const needsApproval = reasons.length > 0 || !approvalPolicy.autoApproveWithinCreditLimit;
 
     const newOrder: Order = {
       id: `ord-${Date.now()}`,
       orderNumber: `LP-2026-0${101 + orders.length + 1}`,
-      customerId: customer.id,
-      customerName: customer.labName,
-      customerArea: customer.areaCity,
-      salespersonId: currentUser.id,
-      salespersonName: currentUser.name.split(' (')[0],
-      status: needsApproval ? 'PENDING_APPROVAL' : 'APPROVED',
+      buyerName: cleanBuyer || (input.isDraft ? 'Untitled Draft Order' : 'Walk-in Buyer'),
+      buyerContact: input.buyerContact.trim() || 'Lab Manager',
+      buyerPhone: input.buyerPhone.trim() || '-',
+      buyerArea: input.buyerArea.trim() || 'Sukkur',
+      paymentTerms: input.paymentTerms,
+      salespersonId: currentUser?.id || 'u-sales-1',
+      salespersonName: currentUser?.name || 'Sales Rep',
+      status: nextStatus,
       items: orderItems,
       subtotalAmount,
       extraDiscountAmount: input.extraDiscountAmount,
       totalAmount,
-      requiresApprovalReasons: reasons,
-      approvalNote: needsApproval
-        ? input.note
-        : 'Auto-approved (Within credit limit & agreed rates)',
-      approvedBy: needsApproval ? undefined : 'System Auto-Rule',
+      orderNote: input.orderNote,
       isOfflineQueued: isOfflineMode,
       clientSyncId: `sync-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -221,35 +291,35 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
     return newOrder;
   };
 
-  const syncOfflineQueue = (): number => {
-    let syncedCount = 0;
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.isOfflineQueued) {
-          syncedCount++;
-          return { ...o, isOfflineQueued: false };
-        }
-        return o;
-      })
-    );
-    setIsOfflineMode(false);
-    return syncedCount;
+  const deleteDraftOrder = (orderId: string) => {
+    setOrders((prev) => prev.filter((o) => o.id !== orderId));
   };
 
-  const approveOrder = (orderId: string, approvalNote?: string, updatedExtraDiscount?: number) => {
+  const updateOrderFromAdmin = (
+    orderId: string,
+    updatedLines: EditableOrderLine[],
+    extraDiscountAmount: number,
+    adminAdjustmentNote: string,
+    approveNow: boolean
+  ) => {
+    const rebuiltItems = buildOrderItems(updatedLines);
+    const subtotalAmount = rebuiltItems.reduce((sum, i) => sum + i.lineTotal, 0);
+    const totalAmount = Math.max(0, subtotalAmount - extraDiscountAmount);
+
     setOrders((prev) =>
       prev.map((o) => {
         if (o.id !== orderId) return o;
-        const discount =
-          typeof updatedExtraDiscount === 'number' ? updatedExtraDiscount : o.extraDiscountAmount;
-        const total = Math.max(0, o.subtotalAmount - discount);
         return {
           ...o,
-          status: 'APPROVED',
-          extraDiscountAmount: discount,
-          totalAmount: total,
-          approvedBy: currentUser.name.split(' (')[0],
-          approvalNote: approvalNote || 'Approved by Admin for FEFO Warehouse Dispatch',
+          items: rebuiltItems,
+          subtotalAmount,
+          extraDiscountAmount,
+          totalAmount,
+          adminAdjustmentNote:
+            adminAdjustmentNote.trim() ||
+            (approveNow ? 'Verified & approved by Admin' : o.adminAdjustmentNote),
+          status: approveNow ? 'APPROVED' : o.status,
+          approvedBy: approveNow ? currentUser?.name || 'Admin' : o.approvedBy,
         };
       })
     );
@@ -262,8 +332,8 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
           ? {
               ...o,
               status: 'REJECTED',
-              approvedBy: currentUser.name.split(' (')[0],
-              approvalNote: reason || 'Rejected due to overdue credit limit',
+              approvedBy: currentUser?.name || 'Admin',
+              adminAdjustmentNote: reason || 'Rejected by Admin',
             }
           : o
       )
@@ -277,7 +347,6 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
     const targetOrder = orders.find((o) => o.id === orderId);
     if (!targetOrder) return;
 
-    // When marking PACKED (if not already allocated), allocate FEFO batches and deduct stock on DISPATCHED/DELIVERED
     if (nextStatus === 'PACKED') {
       setOrders((prev) =>
         prev.map((o) => {
@@ -287,65 +356,54 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
             return {
               ...item,
               allocatedBatchId: fefo?.id || item.allocatedBatchId,
-              allocatedBatchNumber: fefo?.batchNumber || item.allocatedBatchNumber || 'FEFO-STD',
-              allocatedBatchExpiry: fefo?.expiryDate || item.allocatedBatchExpiry || '2027-12-31',
+              allocatedBatchNumber:
+                fefo?.batchNumber || item.allocatedBatchNumber || 'FEFO-STD',
+              allocatedBatchExpiry:
+                fefo?.expiryDate || item.allocatedBatchExpiry || '2027-12-31',
             };
           });
-          return { ...o, status: 'PACKED', items: updatedItems };
+          return {
+            ...o,
+            status: 'PACKED',
+            items: updatedItems,
+            dispatchedBy: currentUser?.name || 'Warehouse Staff',
+          };
         })
       );
       return;
     }
 
     if (nextStatus === 'DISPATCHED') {
-      // Deduct stock from allocated FEFO batches
       setBatches((prevBatches) =>
         prevBatches.map((batch) => {
-          const matchedItem = targetOrder.items.find((i) => i.allocatedBatchId === batch.id);
+          const matchedItem = targetOrder.items.find(
+            (i) => i.allocatedBatchId === batch.id
+          );
           if (!matchedItem) return batch;
+          const totalOut = matchedItem.quantity + (matchedItem.bonusQty || 0);
           return {
             ...batch,
-            quantityOnHand: Math.max(0, batch.quantityOnHand - matchedItem.quantity),
+            quantityOnHand: Math.max(0, batch.quantityOnHand - totalOut),
           };
         })
       );
       setOrders((prev) =>
         prev.map((o) =>
           o.id === orderId
-            ? { ...o, status: 'DISPATCHED', dispatchedAt: new Date().toISOString() }
+            ? {
+                ...o,
+                status: 'DISPATCHED',
+                dispatchedBy:
+                  currentUser?.name || o.dispatchedBy || 'Warehouse Staff',
+                dispatchedAt: new Date().toISOString(),
+              }
             : o
         )
       );
       return;
     }
 
-    if (nextStatus === 'DELIVERED' && targetOrder.status !== 'DELIVERED') {
-      // Debit Customer Khata (Ledger) and update Customer Balance
-      const customer = customers.find((c) => c.id === targetOrder.customerId);
-      const newBalance = (customer?.currentBalance || 0) + targetOrder.totalAmount;
-
-      setCustomers((prev) =>
-        prev.map((c) =>
-          c.id === targetOrder.customerId ? { ...c, currentBalance: newBalance } : c
-        )
-      );
-
-      const newLedgerEntry: LedgerEntry = {
-        id: `led-${Date.now()}`,
-        customerId: targetOrder.customerId,
-        customerName: targetOrder.customerName,
-        type: 'INVOICE_DEBIT',
-        amount: targetOrder.totalAmount,
-        runningBalance: newBalance,
-        referenceNo: targetOrder.orderNumber,
-        note: `Invoice #${targetOrder.orderNumber} delivered (${targetOrder.items.length} items)`,
-        status: 'VERIFIED',
-        recordedById: currentUser.id,
-        recordedByName: currentUser.name.split(' (')[0],
-        createdAt: new Date().toISOString(),
-      };
-
-      setLedger((prev) => [newLedgerEntry, ...prev]);
+    if (nextStatus === 'DELIVERED') {
       setOrders((prev) =>
         prev.map((o) =>
           o.id === orderId
@@ -356,122 +414,91 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const upsertCustomerPrice = (customerId: string, productId: string, customPrice: number) => {
-    setCustomerPrices((prev) => {
-      const existing = prev.find(
-        (cp) => cp.customerId === customerId && cp.productId === productId
-      );
-      if (existing) {
-        return prev.map((cp) => (cp.id === existing.id ? { ...cp, customPrice } : cp));
-      }
-      return [
-        ...prev,
-        {
-          id: `cp-${Date.now()}`,
-          customerId,
-          productId,
-          customPrice,
-        },
-      ];
-    });
+  const syncOfflineQueue = (): number => {
+    let count = 0;
+    setOrders((prev) =>
+      prev.map((o) => {
+        if (o.isOfflineQueued) {
+          count++;
+          return { ...o, isOfflineQueued: false };
+        }
+        return o;
+      })
+    );
+    setIsOfflineMode(false);
+    return count;
   };
 
-  const addProductBatch = (batchInput: Omit<ProductBatch, 'id'>) => {
-    setBatches((prev) => [
-      {
-        ...batchInput,
-        id: `batch-${Date.now()}`,
-      },
-      ...prev,
-    ]);
-  };
-
-  const addProduct = (productInput: Omit<Product, 'id'>) => {
-    setProducts((prev) => [
-      {
-        ...productInput,
-        id: `prod-${Date.now()}`,
-      },
-      ...prev,
-    ]);
-  };
-
-  const addCustomer = (customerInput: Omit<Customer, 'id' | 'isActive'>) => {
-    const newCust: Customer = {
-      ...customerInput,
-      id: `cust-${Date.now()}`,
-      isActive: true,
+  const addProductBatch = (batchInput: Omit<ProductBatch, 'id'>): ProductBatch => {
+    const created: ProductBatch = {
+      ...batchInput,
+      id: `batch-${Date.now()}`,
     };
-    setCustomers((prev) => [newCust, ...prev]);
+    setBatches((prev) => [created, ...prev]);
+    return created;
   };
 
-  const recordRecoveryPayment = (input: {
-    customerId: string;
-    amount: number;
-    paymentMethod: PaymentMethod;
-    referenceNo: string;
-    note?: string;
-  }) => {
-    const customer = customers.find((c) => c.id === input.customerId);
-    if (!customer) return;
-
-    const isAdminRecording = currentUser.role === 'ADMIN';
-    const nextBalance = Math.max(0, customer.currentBalance - input.amount);
-
-    if (isAdminRecording) {
-      setCustomers((prev) =>
-        prev.map((c) => (c.id === customer.id ? { ...c, currentBalance: nextBalance } : c))
-      );
-    }
-
-    const entry: LedgerEntry = {
-      id: `led-${Date.now()}`,
-      customerId: customer.id,
-      customerName: customer.labName,
-      type: 'PAYMENT_CREDIT',
-      amount: input.amount,
-      runningBalance: nextBalance,
-      paymentMethod: input.paymentMethod,
-      referenceNo: input.referenceNo,
-      note:
-        input.note ||
-        (isAdminRecording
-          ? 'Direct recovery verified by Admin'
-          : 'Collected in field by Salesperson (Pending Manager Verification)'),
-      status: isAdminRecording ? 'VERIFIED' : 'PENDING_VERIFICATION',
-      recordedById: currentUser.id,
-      recordedByName: currentUser.name.split(' (')[0],
-      createdAt: new Date().toISOString(),
-    };
-
-    setLedger((prev) => [entry, ...prev]);
-  };
-
-  const verifyRecoveryPayment = (ledgerId: string, approve: boolean) => {
-    const target = ledger.find((l) => l.id === ledgerId);
-    if (!target || target.status !== 'PENDING_VERIFICATION') return;
-
-    if (approve) {
-      setCustomers((prev) =>
-        prev.map((c) =>
-          c.id === target.customerId
-            ? { ...c, currentBalance: Math.max(0, c.currentBalance - target.amount) }
-            : c
-        )
-      );
-    }
-
-    setLedger((prev) =>
-      prev.map((l) =>
-        l.id === ledgerId
-          ? { ...l, status: approve ? 'VERIFIED' : 'REJECTED' }
-          : l
+  const updateBatchQuantity = (batchId: string, newQuantity: number) => {
+    setBatches((prev) =>
+      prev.map((b) =>
+        b.id === batchId ? { ...b, quantityOnHand: Math.max(0, newQuantity) } : b
       )
     );
   };
 
-  const updateApprovalPolicy = (patch: Partial<ApprovalPolicy>) => {
-    setApprovalPolicy((prev) => ({ ...prev, ...patch }));
+  const addProduct = (
+    productInput: Omit<Product, 'id'>,
+    initialBatch?: Omit<ProductBatch, 'id' | 'productId'>
+  ): Product => {
+    const newProd: Product = {
+      ...productInput,
+      id: `prod-${Date.now()}`,
+    };
+    setProducts((prev) => [newProd, ...prev]);
+    if (initialBatch && initialBatch.batchNumber.trim()) {
+      addProductBatch({
+        ...initialBatch,
+        productId: newProd.id,
+      });
+    }
+    return newProd;
+  };
+
+  const updateProduct = (
+    productId: string,
+    patch: Partial<Omit<Product, 'id'>>
+  ) => {
+    setProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, ...patch } : p))
+    );
+  };
+
+  const deleteProduct = (productId: string) => {
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+  };
+
+  const addStaffUser = (userInput: Omit<AppUser, 'id'>) => {
+    setUsers((prev) => [
+      ...prev,
+      {
+        ...userInput,
+        id: `u-${Date.now()}`,
+        isActive: true,
+      },
+    ]);
+  };
+
+  const updateStaffRole = (userId: string, newRole: UserRole) => {
+    setUsers((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u))
+    );
+    setCurrentUser((prev) =>
+      prev && prev.id === userId ? { ...prev, role: newRole } : prev
+    );
+  };
+
+  const removeStaffUser = (userId: string) => {
+    setUsers((prev) => prev.filter((u) => u.id !== userId));
   };
 
   const offlinePendingCount = useMemo(
@@ -484,35 +511,36 @@ export function LabPathProvider({ children }: { children: React.ReactNode }) {
       value={{
         currentUser,
         users,
-        switchRole,
+        login,
+        quickLoginByRole,
+        logout,
+        canAccessRoute,
         isOfflineMode,
         toggleOfflineMode: () => setIsOfflineMode((v) => !v),
         offlinePendingCount,
         syncOfflineQueue,
-        activeDbProvider,
-        setActiveDbProvider,
-        approvalPolicy,
-        updateApprovalPolicy,
-        customers,
+        recentBuyers,
         products,
         batches,
-        customerPrices,
         orders,
-        ledger,
-        getEffectivePrice,
         getProductTotalStock,
         getFefoBatchesForProduct,
         getDaysUntilExpiry,
         createOrder,
-        approveOrder,
+        deleteDraftOrder,
+        updateOrderFromAdmin,
         rejectOrder,
         packAndDispatchOrder,
-        upsertCustomerPrice,
         addProductBatch,
+        updateBatchQuantity,
         addProduct,
-        addCustomer,
-        recordRecoveryPayment,
-        verifyRecoveryPayment,
+        updateProduct,
+        deleteProduct,
+        addGlobalBuyer,
+        deleteGlobalBuyer,
+        addStaffUser,
+        updateStaffRole,
+        removeStaffUser,
       }}
     >
       {children}
